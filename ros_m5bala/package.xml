@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ros_m5bala</name>
+  <version>0.0.1</version>
+  <description>The ros_m5bala package</description>
+
+  <maintainer email="dev.fukuta.tatsuya.int.co.jp@gmail.com">Tatsuya Fukuta</maintainer>
+
+  <license>MIT</license>
+
+  <author email="dev.fukuta.tatsuya.int.co.jp@gmail.com">Tatsuya Fukuta</author>
+
+
+  <depend>roscpp</depend>
+  <depend>rosserial_python</depend>
+  <depend>robot_localization</depend>
+  <depend>robot_description</depend>
+  <depend>joint_state_publisher</depend>
+  <depend>robot_state_publisher</depend>
+  <depend>rviz</depend>
+  <depend></depend>
+  <buildtool_depend>catkin</buildtool_depend>
+
+</package>
