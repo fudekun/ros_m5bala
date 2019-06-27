@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="joy_config" default="ps3.config" />
+    <arg name="joy_dev" default="/dev/input/js0" />
+      
+    <node pkg="joy" type="joy_node" name="ps3_joy">
+        <param name="dev" value="$(arg joy_dev)" />
+        <param name="deadzone" value="0.001" />
+        <param name="autorepeat_rate" value="10" />
+        <param name="coalesce_interval " value="0.25" />
+    </node>
+
+    <node pkg="teleop_twist_joy" name="teleop_twist_joy" type="teleop_node">
+        <rosparam command="load" file="$(find ros_m5bala_drive)/config/$(arg joy_config).yaml" />
+    </node>
+
+</launch>
+

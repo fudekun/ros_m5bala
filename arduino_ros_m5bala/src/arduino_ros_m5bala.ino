@@ -4,6 +4,7 @@
 #include <geometry_msgs/Twist.h>
 #include <nav_msgs/Odometry.h>
 #include <geometry_msgs/Quaternion.h>
+#include <sensor_msgs/CompressedImage.h>
 #include <tf/tf.h>
 #include <tf/tfMessage.h>
 #include <geometry_msgs/TransformStamped.h>
@@ -21,10 +22,11 @@
 #define TREAD_WHEEL 0.040                             // m
 
 
-const char* ssid = "";
-const char* password = "";
+const char* ssid = "rdbox-w98765-g";
+const char* password = "gL7bQKFz";
 WiFiClient client;
-IPAddress server(192, 168, 10, 16); //ROS core IP adress
+char server[] = "coder01";
+//IPAddress server(192, 168, 10, 16); //ROS core IP adress
 
 M5Bala m5bala(Wire);
 
@@ -89,7 +91,7 @@ void setupWiFi() {
 
 ros::NodeHandle_<WiFiHardware> nh;
 
-void messageCb(const geometry_msgs::Twist& twist) {
+void cmd_vel_cb(const geometry_msgs::Twist& twist) {
   const float linear_x = twist.linear.x;
   const float angle_z = -1.0 * twist.angular.z;
   float accl_main = 0.0;
@@ -114,10 +116,15 @@ void messageCb(const geometry_msgs::Twist& twist) {
   joystick_Y = constrain((int16_t)(accl_main + accl_cnt), -70, 30);
   // rotate
   joystick_X = constrain((int16_t)(hndl_main + hndl_cnt), -45, 45);
-  m5bala.move(joystick_Y);
-  m5bala.rotate(joystick_X);
 }
-ros::Subscriber<geometry_msgs::Twist> sub_twist("cmd_vel", &messageCb);
+ros::Subscriber<geometry_msgs::Twist> sub_twist("cmd_vel", &cmd_vel_cb);
+
+
+void image_data_cb(const sensor_msgs::CompressedImage& im) {
+  //
+}
+ros::Subscriber<sensor_msgs::CompressedImage> sub_img("image_data/compressed", &image_data_cb);
+
 
 nav_msgs::Odometry odom_msg;
 tf::tfMessage odom_tf_msg;
@@ -127,7 +134,7 @@ ros::Publisher pub_odom("odom", &odom_msg);
 //ros::Publisher pub_odom_tf("tf", &odom_tf_msg);
 ros::Publisher pub_imu("imu_data", &imu_msg);
 //ros::Publisher pub_imu_tf("tf", &imu_tf_msg);
-void pub_th(void* arg) {
+void pub_calc_th(void* arg) {
   geometry_msgs::TransformStamped odom_trans;
   geometry_msgs::TransformStamped imu_trans;
 
@@ -136,7 +143,6 @@ void pub_th(void* arg) {
   char base_link[] = "base_link";
   char imu_link[] = "imu_link";
   
-
   double x = 0.0;
   double y = 0.0;
   double th = 0.0;
@@ -150,8 +156,12 @@ void pub_th(void* arg) {
   float last_enc1_r;
   current_enc1_r = last_enc1_r = enc1;
   while (1) {
+    // TIME
     current_time = nh.now();
     float dt = current_time.toSec() - last_time.toSec();
+    
+    /////////////////////////////////
+    // ODOM
     current_enc0_l = enc0;
     current_enc1_r = enc1;
     float delta_enc0_l = current_enc0_l - last_enc0_l;
@@ -183,10 +193,7 @@ void pub_th(void* arg) {
     odom_trans.transform.translation.y = y;
     odom_trans.transform.translation.z = 0.0;
     odom_trans.transform.rotation = odom_quat;
-//    odom_tf_msg.transforms_length = 1;
-//    odom_tf_msg.transforms = &odom_trans;
 
-    //next, we'll publish the odometry message over ROS
     odom_msg.header.stamp = current_time;
     odom_msg.header.frame_id = odom;
 
@@ -213,6 +220,7 @@ void pub_th(void* arg) {
     odom_msg.twist.covariance[21] = 1000000000;
     odom_msg.twist.covariance[28] = 1000000000;
     odom_msg.twist.covariance[35] = .1;    
+    //////////////////////////
 
 
     /////////////////////////////////
@@ -244,22 +252,13 @@ void pub_th(void* arg) {
     imu_msg.orientation = imu_quat;
     //////////////////////////
 
-//    imu_trans.header.stamp = current_time;
-//    imu_trans.header.frame_id = imu_link;
-//    imu_trans.child_frame_id = imu_link;
-//    imu_trans.transform.translation.x = 0.0;
-//    imu_trans.transform.translation.y = 0.0;
-//    imu_trans.transform.translation.z = 0.035;
-//    imu_trans.transform.rotation = imu_quat;
-//    imu_tf_msg.transforms_length = 1;
-//    imu_tf_msg.transforms = &imu_trans;
 
+    // Record
     last_enc0_l = current_enc0_l;
     last_enc1_r = current_enc1_r;
-    last_time = current_time;
-    
+    last_time = current_time;    
     // about 60Hz
-    delay(1000/200);
+    delay(1000/60);
   }
 }
 
@@ -277,85 +276,76 @@ void setup() {
   M5.Lcd.setTextFont(2);
   M5.Lcd.setTextColor(WHITE, BLACK);
   M5.Lcd.println("M5Stack Balance Mode start");
-  
+
+  // Init M5Bala
+  m5bala.begin();
+  m5bala.imu->setGyroOffsets(0.47, 0.6, -0.86);
+  delay(1000);
+  m5bala.move(-30);
+  m5bala.rotate(0);
+
   setupWiFi();
 
   // for ROS
   nh.initNode();
+  nh.setSpinTimeout(100);
   nh.subscribe(sub_twist);
+  nh.subscribe(sub_img);
   nh.advertise(pub_odom);
-//  nh.advertise(pub_odom_tf);
   nh.advertise(pub_imu);
-//  nh.advertise(pub_imu_tf);
 
-  xTaskCreatePinnedToCore(pub_th, "pub_th", 4096, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(m5_loop_th, "m5_loop_th", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(pub_calc_th, "pub_calc_th", 4096, NULL, 12, NULL, 0);
+  xTaskCreatePinnedToCore(pub_th, "pub_th", 4096, NULL, 13, NULL, 0);
+  xTaskCreatePinnedToCore(sub_th, "sub_th", 4096, NULL, 13, NULL, 1);
 }
 
-void m5_loop_th(void* arg) {
-  // Init M5Bala
-  m5bala.begin();
-  m5bala.imu->setGyroOffsets(0.47, 0.6, -0.86);
-  delay(500);
-  m5bala.move(-30);
-  m5bala.rotate(0);
-  
+void pub_th(void* arg) {
   while (1) {
-    // M5Bala run
-    m5bala.run();
-    // M5 Loop
-    M5.update();
-
-    // encoder update
-    if (m5bala.getOut0() != 0 && abs(m5bala.getOut0()) < 200) {
-      enc0 += (m5bala.getSpeed0()/NUM_OF_PULSES_PER_WHEEL_REVOLUTION);
-    }
-    if (m5bala.getOut1() != 0 && abs(m5bala.getOut1()) < 200) {
-      enc1 += (m5bala.getSpeed1()/NUM_OF_PULSES_PER_WHEEL_REVOLUTION);
-    }
-    
-    accX = -1.0 * m5bala.imu->getAccY() * 9.81;
-    accY = 1.0 * m5bala.imu->getAccX() * 9.81;
-    accZ = -1.0 * m5bala.imu->getAccZ() * 9.81;
-    gyroX = -1.0 * m5bala.imu->getGyroY() * (3.1415926535897931/180.0);
-    gyroY = -1.0 * m5bala.imu->getGyroX() * (3.1415926535897931/180.0);
-    gyroZ = -1.0 * m5bala.imu->getGyroZ() * (3.1415926535897931/180.0);
-    angleX = 1.0 * m5bala.imu->getAngleY();
-    angleY = -1.0 * m5bala.imu->getAngleX();
-    angleZ = 1.0 * m5bala.imu->getAngleZ();
-
-    M5.Lcd.setCursor(0, 20);
-    M5.Lcd.printf("g_x: %f", gyroX);
-    M5.Lcd.setCursor(0, 40);
-    M5.Lcd.printf("g_y: %f", gyroY);
-    M5.Lcd.setCursor(0, 60);
-    M5.Lcd.printf("g_z: %f", gyroZ);
-    M5.Lcd.setCursor(0, 80);
-    M5.Lcd.printf("_x: %2f", angleX);
-    M5.Lcd.setCursor(0, 100);
-    M5.Lcd.printf("_y: %2f", angleY);
-    M5.Lcd.setCursor(0, 120);
-    M5.Lcd.printf("_z: %2f", angleZ);
-    M5.Lcd.setCursor(0, 140);
-    M5.Lcd.printf("a_x: %f", accX);
-    M5.Lcd.setCursor(0, 160);
-    M5.Lcd.printf("a_y: %f", accY);
-    M5.Lcd.setCursor(0, 180);
-    M5.Lcd.printf("a_z: %f", accZ);
+    pub_odom.publish(&odom_msg);
+    pub_imu.publish(&imu_msg);
+    delay(1000/30);
   }
 }
 
+void sub_th(void* arg) {
+  while (1) {
+    nh.spinOnce();
+    delay(1000/100);
+  }
+}
+
+void ros_run() {
+  // encoder update
+  if (m5bala.getOut0() != 0 && abs(m5bala.getOut0()) < 200) {
+    enc0 += (m5bala.getSpeed0()/NUM_OF_PULSES_PER_WHEEL_REVOLUTION);
+  }
+  if (m5bala.getOut1() != 0 && abs(m5bala.getOut1()) < 200) {
+    enc1 += (m5bala.getSpeed1()/NUM_OF_PULSES_PER_WHEEL_REVOLUTION);
+  }
+  
+  accX = -1.0 * m5bala.imu->getAccY() * 9.81;
+  accY = 1.0 * m5bala.imu->getAccX() * 9.81;
+  accZ = -1.0 * m5bala.imu->getAccZ() * 9.81;
+  gyroX = -1.0 * m5bala.imu->getGyroY() * (3.1415926535897931/180.0);
+  gyroY = -1.0 * m5bala.imu->getGyroX() * (3.1415926535897931/180.0);
+  gyroZ = -1.0 * m5bala.imu->getGyroZ() * (3.1415926535897931/180.0);
+  angleX = 1.0 * m5bala.imu->getAngleY();
+  angleY = -1.0 * m5bala.imu->getAngleX();
+  angleZ = 1.0 * m5bala.imu->getAngleZ();
+
+  m5bala.move(joystick_Y);
+  m5bala.rotate(joystick_X);
+
+  delay(1000/100);
+}
 
 void loop() {
   // ROS
-  pub_odom.publish(&odom_msg);
-  nh.spinOnce();
-//  pub_odom_tf.publish(&odom_tf_msg);
-//  nh.spinOnce();
-  pub_imu.publish(&imu_msg);
-  nh.spinOnce();
-//  pub_imu_tf.publish(&imu_tf_msg);
-//  nh.spinOnce();
-  // about 60Hz
-  delay(1000/30);
+  ros_run();
+
+  // M5Bala run
+  m5bala.run();
+
+  // M5 Loop
+  M5.update();
 }

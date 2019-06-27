@@ -13,22 +13,10 @@
   <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"
     respawn="false" output="screen">
   </node>
-<!-- 
-  <node pkg="robot_pose_ekf" type="robot_pose_ekf" name="robot_pose_ekf">
-    <param name="output_frame" value="odom_combined"/>
-    <param name="base_footprint_frame" value="base_footprint"/>
-    <param name="freq" value="30.0"/>
-    <param name="sensor_timeout" value="1.0"/>
-    <param name="odom_used" value="true"/>
-    <param name="imu_used" value="true"/>
-    <param name="vo_used" value="false"/>
-    <param name="debug" value="false"/>
-    <param name="self_diagnose" value="false"/>
-  </node> -->
 
   <node pkg="robot_localization" type="ekf_localization_node" name="ekf_se" clear_params="true" output="screen">
     <rosparam command="load" file="$(find ros_m5bala_drive)/launch/mode1.yaml" />
   </node>
 
-  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find ros_m5bala_drive)/launch/m5bala.rviz"/>
+  <!--<node name="rviz" pkg="rviz" type="rviz" args="-d $(find ros_m5bala_drive)/launch/m5bala.rviz"/>-->
 </launch>

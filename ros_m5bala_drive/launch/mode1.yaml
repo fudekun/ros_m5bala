@@ -1,6 +1,6 @@
 # for wheel and imu fusion
 
-frequency: 30
+frequency: 15
 sensor_timeout: 0.1
 two_d_mode: true
 transform_time_offset: 0.0
@@ -25,4 +25,4 @@ imu0_config: [false, false, false,
               false, false, true,
               false, false, false,
               false, false, true,
-              true, false, false]
+              false, false, false]
