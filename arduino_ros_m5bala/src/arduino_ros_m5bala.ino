@@ -13,6 +13,9 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include "M5Bala.h"
+#include <ArduinoOTA.h>
+#include <ESPmDNS.h>
+#include <WiFiUdp.h>
 
 
 #define NUM_OF_PULSES_PER_WHEEL_REVOLUTION 2560.0     // count up per int8=>256pulses/20deg(16pices)
@@ -79,7 +82,9 @@ class WiFiHardware {
 };
 
 void setupWiFi() {
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
+  WiFi.setHostname("m5bala-001");
   uint8_t i = 0;
   while (WiFi.status() != WL_CONNECTED && i++ < 20) delay(500);
   if (i == 21) {
@@ -258,13 +263,14 @@ void pub_calc_th(void* arg) {
     last_enc1_r = current_enc1_r;
     last_time = current_time;    
     // about 60Hz
-    delay(1000/60);
+    delay(1000/100);
   }
 }
 
 void setup() {
+  Serial.begin(115200);
   // Power ON Stabilizing...
-  //delay(500);
+  delay(500);
   M5.begin();
 
   // Init I2C
@@ -284,7 +290,36 @@ void setup() {
   m5bala.move(-30);
   m5bala.rotate(0);
 
+
   setupWiFi();
+
+  ArduinoOTA.setHostname("m5bala-001");
+  ArduinoOTA
+    .onStart([]() {
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH)
+        type = "sketch";
+      else // U_SPIFFS
+        type = "filesystem";
+
+      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+      Serial.println("Start updating " + type);
+    })
+    .onEnd([]() {
+      Serial.println("\nEnd");
+    })
+    .onProgress([](unsigned int progress, unsigned int total) {
+      Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    })
+    .onError([](ota_error_t error) {
+      Serial.printf("Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+      else if (error == OTA_END_ERROR) Serial.println("End Failed");
+    });
+  ArduinoOTA.begin();
 
   // for ROS
   nh.initNode();
@@ -296,7 +331,7 @@ void setup() {
 
   xTaskCreatePinnedToCore(pub_calc_th, "pub_calc_th", 4096, NULL, 12, NULL, 0);
   xTaskCreatePinnedToCore(pub_th, "pub_th", 4096, NULL, 13, NULL, 0);
-  xTaskCreatePinnedToCore(sub_th, "sub_th", 4096, NULL, 13, NULL, 1);
+  xTaskCreatePinnedToCore(sub_th, "sub_th", 61440, NULL, 1, NULL, 1);
 }
 
 void pub_th(void* arg) {
@@ -310,7 +345,7 @@ void pub_th(void* arg) {
 void sub_th(void* arg) {
   while (1) {
     nh.spinOnce();
-    delay(1000/100);
+    delay(1000/30);
   }
 }
 
@@ -332,7 +367,7 @@ void ros_run() {
   angleX = 1.0 * m5bala.imu->getAngleY();
   angleY = -1.0 * m5bala.imu->getAngleX();
   angleZ = 1.0 * m5bala.imu->getAngleZ();
-
+  
   m5bala.move(joystick_Y);
   m5bala.rotate(joystick_X);
 
@@ -348,4 +383,7 @@ void loop() {
 
   // M5 Loop
   M5.update();
+
+  // For OTA
+  ArduinoOTA.handle();
 }

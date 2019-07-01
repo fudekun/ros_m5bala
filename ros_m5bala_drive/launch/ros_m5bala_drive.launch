@@ -18,5 +18,5 @@
     <rosparam command="load" file="$(find ros_m5bala_drive)/launch/mode1.yaml" />
   </node>
 
-  <!--<node name="rviz" pkg="rviz" type="rviz" args="-d $(find ros_m5bala_drive)/launch/m5bala.rviz"/>-->
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find ros_m5bala_drive)/launch/m5bala.rviz"/>
 </launch>
