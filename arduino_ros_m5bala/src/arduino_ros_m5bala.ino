@@ -73,6 +73,9 @@ class WiFiHardware {
     int read() {
       return client.read();      
     }
+    int read(uint8_t* data, int length) {
+      return client.read(data, length);      
+    }
     void write(uint8_t* data, int length) {
       client.write(data, length);
     }
@@ -127,9 +130,10 @@ ros::Subscriber<geometry_msgs::Twist> sub_twist("cmd_vel", &cmd_vel_cb);
 
 void image_data_cb(const sensor_msgs::CompressedImage& im) {
   //
+  M5.Lcd.drawJpg(im.data, sizeof(im.data), 80, 60, 0, 0, 0, 0, JPEG_DIV_NONE);
 }
-ros::Subscriber<sensor_msgs::CompressedImage> sub_img("image_data/compressed", &image_data_cb);
-
+//ros::Subscriber<sensor_msgs::CompressedImage> sub_img("image_data/compressed", &image_data_cb);
+ros::Subscriber<sensor_msgs::CompressedImage> sub_img("usb_cam/image_raw/compressed", &image_data_cb);
 
 nav_msgs::Odometry odom_msg;
 tf::tfMessage odom_tf_msg;
@@ -279,6 +283,7 @@ void setup() {
   delay(500);
 
   // Display info
+  M5.Lcd.setBrightness(255);
   M5.Lcd.setTextFont(2);
   M5.Lcd.setTextColor(WHITE, BLACK);
   M5.Lcd.println("M5Stack Balance Mode start");
@@ -289,7 +294,6 @@ void setup() {
   delay(1000);
   m5bala.move(-30);
   m5bala.rotate(0);
-
 
   setupWiFi();
 
@@ -321,9 +325,11 @@ void setup() {
     });
   ArduinoOTA.begin();
 
+  MDNS.begin("m5bala-001");
+
   // for ROS
   nh.initNode();
-  nh.setSpinTimeout(100);
+  nh.setSpinTimeout(1000);
   nh.subscribe(sub_twist);
   nh.subscribe(sub_img);
   nh.advertise(pub_odom);

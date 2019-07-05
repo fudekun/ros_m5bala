@@ -99,7 +99,7 @@ using rosserial_msgs::TopicInfo;
 template<class Hardware,
          int MAX_SUBSCRIBERS = 25,
          int MAX_PUBLISHERS = 25,
-         int INPUT_SIZE = 61440,
+         int INPUT_SIZE = 30720,
          int OUTPUT_SIZE = 1024>
 class NodeHandle_ : public NodeHandleBase_
 {
@@ -228,6 +228,7 @@ public:
     }
 
     /* while available buffer, read data */
+    uint8_t tmp_[INPUT_SIZE];
     while (true)
     {
       // If a timeout has been specified, check how long spinOnce has been running.
@@ -243,16 +244,25 @@ public:
           return SPIN_TIMEOUT;
         }
       }
-      int data = hardware_.read();
-      if (data < 0)
-        break;
-      checksum_ += data;
+      int data;
+      if (mode_ != MODE_MESSAGE) {
+        data = hardware_.read();
+        if (data < 0)
+          break;
+        checksum_ += data;
+      }
       if (mode_ == MODE_MESSAGE)          /* message data being recieved */
       {
-        message_in[index_++] = data;
-        bytes_--;
-        if (bytes_ == 0)                 /* is message complete? if so, checksum */
-          mode_ = MODE_MSG_CHECKSUM;
+        int read_len_ = hardware_.read(tmp_, bytes_);
+        if (read_len_ >= 0) {
+          checksum_ = checksum_ + std::accumulate(tmp_, tmp_ + read_len_, 0);
+          memcpy(message_in+index_, tmp_, read_len_);
+          index_ += read_len_;
+          bytes_ -= read_len_;
+          if (bytes_ == 0) {
+            mode_ = MODE_MSG_CHECKSUM;
+          }
+        }
       }
       else if (mode_ == MODE_FIRST_FF)
       {
