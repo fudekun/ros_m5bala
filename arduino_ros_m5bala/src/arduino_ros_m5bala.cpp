@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <M5Stack.h>
 #include <ros.h>
 #include <std_msgs/Empty.h>
@@ -17,19 +18,26 @@
 #include <ESPmDNS.h>
 #include <WiFiUdp.h>
 
-
 #define NUM_OF_PULSES_PER_WHEEL_REVOLUTION 2560.0     // count up per int8=>256pulses/20deg(16pices)
 #define MAX_SPEED_OF_MOVE_MS 0.069                    // m/s
 #define MAX_SPEED_OF_ROTATE_RS 0.417                  // rad/s
 #define DIAMETER_WHEEL 0.04356                        // m
 #define TREAD_WHEEL 0.040                             // m
 
+void setRPY(const float& roll, const float& pitch, const float& yaw, float date[4]);
+void setupWiFi();
+void cmd_vel_cb(const geometry_msgs::Twist& twist);
+void image_data_cb(const sensor_msgs::CompressedImage& im);
+void pub_calc_th(void* arg);
+void pub_th(void* arg);
+void sub_th(void* arg);
+void ros_run();
 
-const char* ssid = "rdbox-w98765-g";
-const char* password = "gL7bQKFz";
+const char* ssid = "";
+const char* password = "";
 WiFiClient client;
-char server[] = "coder01";
-//IPAddress server(192, 168, 10, 16); //ROS core IP adress
+//char server[] = "nuc-01.local";
+IPAddress server(192, 168, 10, 5); //ROS core IP adress
 
 M5Bala m5bala(Wire);
 
@@ -47,6 +55,126 @@ float angleX = 0.0;
 float angleY = 0.0;
 float angleZ = 0.0;
 
+
+class WiFiHardware {
+  public:
+    WiFiHardware() {};
+    void init() {
+      client.connect(server, 11411);
+    }
+    int read() {
+      return client.read();
+    }
+    int read(uint8_t* data, int length) {
+      return client.read(data, length);
+    }
+    void write(uint8_t* data, int length) {
+      client.write(data, length);
+    }
+    unsigned long time() {
+      return millis(); // easy; did this one for you
+    }
+};
+
+
+ros::NodeHandle_<WiFiHardware> nh;
+ros::Subscriber<geometry_msgs::Twist> sub_twist("cmd_vel", &cmd_vel_cb);
+ros::Subscriber<sensor_msgs::CompressedImage> sub_img("movie_compressed/compressed", &image_data_cb);
+
+nav_msgs::Odometry odom_msg;
+sensor_msgs::Imu imu_msg;
+tf::tfMessage imu_tf_msg;
+ros::Publisher pub_odom("odom", &odom_msg);
+ros::Publisher pub_imu("imu_data", &imu_msg);
+
+
+void setup() {
+  Serial.begin(115200);
+  // Power ON Stabilizing...
+  delay(500);
+  M5.begin();
+
+  // Init I2C
+  Wire.begin();
+  Wire.setClock(400000UL);  // Set I2C frequency to 400kHz
+  delay(500);
+
+  // Display info
+  M5.Lcd.setBrightness(255);
+  M5.Lcd.setTextFont(2);
+  M5.Lcd.setTextColor(WHITE, BLACK);
+  M5.Lcd.println("M5Stack Balance Mode start");
+
+  // Init M5Bala
+  m5bala.begin();
+  m5bala.imu->setGyroOffsets(0.47, 0.6, -0.86);
+  delay(1000);
+  m5bala.move(-30);
+  m5bala.rotate(0);
+
+  setupWiFi();
+
+  ArduinoOTA.setHostname("m5bala-001");
+  ArduinoOTA
+    .onStart([]() {
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH)
+        type = "sketch";
+      else // U_SPIFFS
+        type = "filesystem";
+
+      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+      Serial.println("Start updating " + type);
+    })
+    .onEnd([]() {
+      Serial.println("\nEnd");
+    })
+    .onProgress([](unsigned int progress, unsigned int total) {
+      Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    })
+    .onError([](ota_error_t error) {
+      Serial.printf("Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+      else if (error == OTA_END_ERROR) Serial.println("End Failed");
+    });
+  ArduinoOTA.begin();
+
+  MDNS.begin("m5bala-001");
+
+  // for ROS
+  nh.initNode();
+  nh.setSpinTimeout(1000);
+  nh.subscribe(sub_twist);
+  nh.subscribe(sub_img);
+  nh.advertise(pub_odom);
+  nh.advertise(pub_imu);
+
+  xTaskCreatePinnedToCore(pub_calc_th, "pub_calc_th", 4096, NULL, 12, NULL, 0);
+  xTaskCreatePinnedToCore(pub_th, "pub_th", 4096, NULL, 13, NULL, 0);
+  xTaskCreatePinnedToCore(sub_th, "sub_th", 61440, NULL, 1, NULL, 1);
+}
+
+
+
+void loop() {
+  // ROS
+  ros_run();
+
+  // M5Bala run
+  m5bala.run();
+
+  // M5 Loop
+  M5.update();
+
+  // For OTA
+  ArduinoOTA.handle();
+}
+
+
+
 void setRPY(const float& roll, const float& pitch, const float& yaw, float date[4]) {
   float halfYaw = float(yaw) * float(0.5);  
   float halfPitch = float(pitch) * float(0.5);  
@@ -63,27 +191,6 @@ void setRPY(const float& roll, const float& pitch, const float& yaw, float date[
   date[3] = cosRoll * cosPitch * cosYaw + sinRoll * sinPitch * sinYaw;
 }
 
-
-class WiFiHardware {
-  public:
-    WiFiHardware() {};
-    void init() {
-      client.connect(server, 11411);   
-    }
-    int read() {
-      return client.read();      
-    }
-    int read(uint8_t* data, int length) {
-      return client.read(data, length);      
-    }
-    void write(uint8_t* data, int length) {
-      client.write(data, length);
-    }
-    unsigned long time() {
-      return millis(); // easy; did this one for you
-    }
-};
-
 void setupWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -95,9 +202,6 @@ void setupWiFi() {
   }
   M5.Lcd.println(WiFi.localIP());
 }
-
-
-ros::NodeHandle_<WiFiHardware> nh;
 
 void cmd_vel_cb(const geometry_msgs::Twist& twist) {
   const float linear_x = twist.linear.x;
@@ -125,24 +229,12 @@ void cmd_vel_cb(const geometry_msgs::Twist& twist) {
   // rotate
   joystick_X = constrain((int16_t)(hndl_main + hndl_cnt), -45, 45);
 }
-ros::Subscriber<geometry_msgs::Twist> sub_twist("cmd_vel", &cmd_vel_cb);
-
 
 void image_data_cb(const sensor_msgs::CompressedImage& im) {
   //
   M5.Lcd.drawJpg(im.data, sizeof(im.data), 80, 60, 0, 0, 0, 0, JPEG_DIV_NONE);
 }
-//ros::Subscriber<sensor_msgs::CompressedImage> sub_img("image_data/compressed", &image_data_cb);
-ros::Subscriber<sensor_msgs::CompressedImage> sub_img("usb_cam/image_raw/compressed", &image_data_cb);
 
-nav_msgs::Odometry odom_msg;
-tf::tfMessage odom_tf_msg;
-sensor_msgs::Imu imu_msg;
-tf::tfMessage imu_tf_msg;
-ros::Publisher pub_odom("odom", &odom_msg);
-//ros::Publisher pub_odom_tf("tf", &odom_tf_msg);
-ros::Publisher pub_imu("imu_data", &imu_msg);
-//ros::Publisher pub_imu_tf("tf", &imu_tf_msg);
 void pub_calc_th(void* arg) {
   geometry_msgs::TransformStamped odom_trans;
   geometry_msgs::TransformStamped imu_trans;
@@ -151,11 +243,11 @@ void pub_calc_th(void* arg) {
   char base_footprint[] = "base_footprint";
   char base_link[] = "base_link";
   char imu_link[] = "imu_link";
-  
+
   double x = 0.0;
   double y = 0.0;
   double th = 0.0;
-  
+
   ros::Time current_time = nh.now();
   ros::Time last_time = nh.now();
   float current_enc0_l;
@@ -168,7 +260,7 @@ void pub_calc_th(void* arg) {
     // TIME
     current_time = nh.now();
     float dt = current_time.toSec() - last_time.toSec();
-    
+
     /////////////////////////////////
     // ODOM
     current_enc0_l = enc0;
@@ -265,79 +357,10 @@ void pub_calc_th(void* arg) {
     // Record
     last_enc0_l = current_enc0_l;
     last_enc1_r = current_enc1_r;
-    last_time = current_time;    
+    last_time = current_time;
     // about 60Hz
     delay(1000/100);
   }
-}
-
-void setup() {
-  Serial.begin(115200);
-  // Power ON Stabilizing...
-  delay(500);
-  M5.begin();
-
-  // Init I2C
-  Wire.begin();
-  Wire.setClock(400000UL);  // Set I2C frequency to 400kHz
-  delay(500);
-
-  // Display info
-  M5.Lcd.setBrightness(255);
-  M5.Lcd.setTextFont(2);
-  M5.Lcd.setTextColor(WHITE, BLACK);
-  M5.Lcd.println("M5Stack Balance Mode start");
-
-  // Init M5Bala
-  m5bala.begin();
-  m5bala.imu->setGyroOffsets(0.47, 0.6, -0.86);
-  delay(1000);
-  m5bala.move(-30);
-  m5bala.rotate(0);
-
-  setupWiFi();
-
-  ArduinoOTA.setHostname("m5bala-001");
-  ArduinoOTA
-    .onStart([]() {
-      String type;
-      if (ArduinoOTA.getCommand() == U_FLASH)
-        type = "sketch";
-      else // U_SPIFFS
-        type = "filesystem";
-
-      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-      Serial.println("Start updating " + type);
-    })
-    .onEnd([]() {
-      Serial.println("\nEnd");
-    })
-    .onProgress([](unsigned int progress, unsigned int total) {
-      Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-    })
-    .onError([](ota_error_t error) {
-      Serial.printf("Error[%u]: ", error);
-      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-      else if (error == OTA_END_ERROR) Serial.println("End Failed");
-    });
-  ArduinoOTA.begin();
-
-  MDNS.begin("m5bala-001");
-
-  // for ROS
-  nh.initNode();
-  nh.setSpinTimeout(1000);
-  nh.subscribe(sub_twist);
-  nh.subscribe(sub_img);
-  nh.advertise(pub_odom);
-  nh.advertise(pub_imu);
-
-  xTaskCreatePinnedToCore(pub_calc_th, "pub_calc_th", 4096, NULL, 12, NULL, 0);
-  xTaskCreatePinnedToCore(pub_th, "pub_th", 4096, NULL, 13, NULL, 0);
-  xTaskCreatePinnedToCore(sub_th, "sub_th", 61440, NULL, 1, NULL, 1);
 }
 
 void pub_th(void* arg) {
@@ -363,7 +386,7 @@ void ros_run() {
   if (m5bala.getOut1() != 0 && abs(m5bala.getOut1()) < 200) {
     enc1 += (m5bala.getSpeed1()/NUM_OF_PULSES_PER_WHEEL_REVOLUTION);
   }
-  
+  // Align Unit.
   accX = -1.0 * m5bala.imu->getAccY() * 9.81;
   accY = 1.0 * m5bala.imu->getAccX() * 9.81;
   accZ = -1.0 * m5bala.imu->getAccZ() * 9.81;
@@ -373,23 +396,9 @@ void ros_run() {
   angleX = 1.0 * m5bala.imu->getAngleY();
   angleY = -1.0 * m5bala.imu->getAngleX();
   angleZ = 1.0 * m5bala.imu->getAngleZ();
-  
+  // command
   m5bala.move(joystick_Y);
   m5bala.rotate(joystick_X);
-
+  // Delay
   delay(1000/100);
-}
-
-void loop() {
-  // ROS
-  ros_run();
-
-  // M5Bala run
-  m5bala.run();
-
-  // M5 Loop
-  M5.update();
-
-  // For OTA
-  ArduinoOTA.handle();
 }
