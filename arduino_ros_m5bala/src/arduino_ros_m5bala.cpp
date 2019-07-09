@@ -6,10 +6,9 @@
 #include <nav_msgs/Odometry.h>
 #include <geometry_msgs/Quaternion.h>
 #include <sensor_msgs/CompressedImage.h>
-#include <tf/tf.h>
-#include <tf/tfMessage.h>
 #include <geometry_msgs/TransformStamped.h>
 #include <sensor_msgs/Imu.h>
+#include <std_msgs/ColorRGBA.h>
 #include <float.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -17,6 +16,8 @@
 #include <ArduinoOTA.h>
 #include <ESPmDNS.h>
 #include <WiFiUdp.h>
+#include <Adafruit_NeoPixel.h>
+
 
 #define NUM_OF_PULSES_PER_WHEEL_REVOLUTION 2560.0     // count up per int8=>256pulses/20deg(16pices)
 #define MAX_SPEED_OF_MOVE_MS 0.069                    // m/s
@@ -24,23 +25,32 @@
 #define DIAMETER_WHEEL 0.04356                        // m
 #define TREAD_WHEEL 0.040                             // m
 
+#define M5STACK_FIRE_NEO_NUM_LEDS 10                  // Left(4~9) Right(0~4)
+#define M5STACK_FIRE_NEO_DATA_PIN 15
+#define M5STACK_FIRE_MICROPHONE_PIN 34
+#define M5STACK_FIRE_SPEAKER_PIN 25
+
+
 void setRPY(const float& roll, const float& pitch, const float& yaw, float date[4]);
 void setupWiFi();
 void cmd_vel_cb(const geometry_msgs::Twist& twist);
 void image_data_cb(const sensor_msgs::CompressedImage& im);
+void led_left_cb(const std_msgs::ColorRGBA& rgba);
+void led_right_cb(const std_msgs::ColorRGBA& rgba);
 void pub_calc_th(void* arg);
 void pub_th(void* arg);
 void sub_th(void* arg);
-void ros_run();
+void robot_run();
+void neopixel_ctrl(int first_cnt, int last_cnt, int r, int g, int b, int w);
 
+WiFiClient client;
 const char* ssid = "";
 const char* password = "";
-WiFiClient client;
-//char server[] = "nuc-01.local";
-IPAddress server(192, 168, 10, 5); //ROS core IP adress
+char server[] = "coder01";
+//IPAddress server(192, 168, 10, 16); //ROS core IP adress
 
 M5Bala m5bala(Wire);
-
+Adafruit_NeoPixel pixels = Adafruit_NeoPixel(M5STACK_FIRE_NEO_NUM_LEDS, M5STACK_FIRE_NEO_DATA_PIN, NEO_GRB + NEO_KHZ400);
 int16_t joystick_X;
 int16_t joystick_Y;
 float enc0 = 0.0;
@@ -54,7 +64,6 @@ float gyroZ = 0.0;
 float angleX = 0.0;
 float angleY = 0.0;
 float angleZ = 0.0;
-
 
 class WiFiHardware {
   public:
@@ -76,17 +85,48 @@ class WiFiHardware {
     }
 };
 
+class SimpleRate {
+  private:
+    int hz_;
+    unsigned long start_;
+    int expected_cycle_time_;
+    unsigned long expected_end;
+    unsigned long actual_end;
+    int sleep_time;
+    uint32_t actual_cycle_time_;
+  public:
+    SimpleRate(int hz) {
+      hz_ = hz;
+      start_ = millis();
+      expected_cycle_time_ = (int)((1.0 / hz) * 1000);
+    }
+    uint32_t sleep() {
+      expected_end = start_ + expected_cycle_time_;
+      actual_end = millis();
+      sleep_time = expected_end - actual_end;
+      actual_cycle_time_ = actual_end - start_;
+      start_ = expected_end;
+      if(sleep_time <= 0) {
+        return 0;
+      }
+      delay((uint32_t)sleep_time);
+      return sleep_time;
+    }
+};
 
+// ROS Node
 ros::NodeHandle_<WiFiHardware> nh;
-ros::Subscriber<geometry_msgs::Twist> sub_twist("cmd_vel", &cmd_vel_cb);
-ros::Subscriber<sensor_msgs::CompressedImage> sub_img("movie_compressed/compressed", &image_data_cb);
-
+// ROS Pub Msg
 nav_msgs::Odometry odom_msg;
 sensor_msgs::Imu imu_msg;
-tf::tfMessage imu_tf_msg;
+// ROS Pub Topic
 ros::Publisher pub_odom("odom", &odom_msg);
 ros::Publisher pub_imu("imu_data", &imu_msg);
-
+// ROS Sub Topic
+ros::Subscriber<geometry_msgs::Twist> sub_twist("cmd_vel", &cmd_vel_cb);
+ros::Subscriber<sensor_msgs::CompressedImage> sub_img("usb_cam/image_raw/compressed", &image_data_cb);
+ros::Subscriber<std_msgs::ColorRGBA> sub_led_left("led/left", &led_left_cb);
+ros::Subscriber<std_msgs::ColorRGBA> sub_led_right("led/right", &led_right_cb);
 
 void setup() {
   Serial.begin(115200);
@@ -111,6 +151,11 @@ void setup() {
   delay(1000);
   m5bala.move(-30);
   m5bala.rotate(0);
+
+  // Init NeoPixel(LED)
+  pixels.begin();
+  pixels.setBrightness(30);
+  neopixel_ctrl(0, M5STACK_FIRE_NEO_NUM_LEDS, 255, 255, 255, 30);
 
   setupWiFi();
 
@@ -149,6 +194,8 @@ void setup() {
   nh.setSpinTimeout(1000);
   nh.subscribe(sub_twist);
   nh.subscribe(sub_img);
+  nh.subscribe(sub_led_right);
+  nh.subscribe(sub_led_left);
   nh.advertise(pub_odom);
   nh.advertise(pub_imu);
 
@@ -157,11 +204,13 @@ void setup() {
   xTaskCreatePinnedToCore(sub_th, "sub_th", 61440, NULL, 1, NULL, 1);
 }
 
-
-
+SimpleRate* main_loop_rate = new SimpleRate(60);
 void loop() {
-  // ROS
-  ros_run();
+  // sleep
+  main_loop_rate->sleep();
+
+  // Robot
+  robot_run();
 
   // M5Bala run
   m5bala.run();
@@ -174,11 +223,14 @@ void loop() {
 }
 
 
+/////////////////////////////////////////////
+//
+/////////////////////////////////////////////
 
 void setRPY(const float& roll, const float& pitch, const float& yaw, float date[4]) {
-  float halfYaw = float(yaw) * float(0.5);  
-  float halfPitch = float(pitch) * float(0.5);  
-  float halfRoll = float(roll) * float(0.5);  
+  float halfYaw = float(yaw) * float(0.5);
+  float halfPitch = float(pitch) * float(0.5);
+  float halfRoll = float(roll) * float(0.5);
   float cosYaw = cos(halfYaw);
   float sinYaw = sin(halfYaw);
   float cosPitch = cos(halfPitch);
@@ -190,6 +242,7 @@ void setRPY(const float& roll, const float& pitch, const float& yaw, float date[
   date[2] = cosRoll * cosPitch * sinYaw - sinRoll * sinPitch * cosYaw;
   date[3] = cosRoll * cosPitch * cosYaw + sinRoll * sinPitch * sinYaw;
 }
+
 
 void setupWiFi() {
   WiFi.mode(WIFI_STA);
@@ -229,11 +282,19 @@ void cmd_vel_cb(const geometry_msgs::Twist& twist) {
   // rotate
   joystick_X = constrain((int16_t)(hndl_main + hndl_cnt), -45, 45);
 }
-
 void image_data_cb(const sensor_msgs::CompressedImage& im) {
   //
   M5.Lcd.drawJpg(im.data, sizeof(im.data), 80, 60, 0, 0, 0, 0, JPEG_DIV_NONE);
 }
+void led_left_cb(const std_msgs::ColorRGBA& rgba) {
+  //
+  neopixel_ctrl(5, 10, rgba.r, rgba.g, rgba.b, rgba.a);
+}
+void led_right_cb(const std_msgs::ColorRGBA& rgba) {
+  //
+  neopixel_ctrl(0, 5, rgba.r, rgba.g, rgba.b, rgba.a);
+}
+
 
 void pub_calc_th(void* arg) {
   geometry_msgs::TransformStamped odom_trans;
@@ -256,11 +317,14 @@ void pub_calc_th(void* arg) {
   float current_enc1_r;
   float last_enc1_r;
   current_enc1_r = last_enc1_r = enc1;
+
+  SimpleRate* pub_calc_th_rate = new SimpleRate(60);
   while (1) {
+    // rateing
+    pub_calc_th_rate->sleep();
     // TIME
     current_time = nh.now();
     float dt = current_time.toSec() - last_time.toSec();
-
     /////////////////////////////////
     // ODOM
     current_enc0_l = enc0;
@@ -320,9 +384,8 @@ void pub_calc_th(void* arg) {
     odom_msg.twist.covariance[14] = 1000000000;
     odom_msg.twist.covariance[21] = 1000000000;
     odom_msg.twist.covariance[28] = 1000000000;
-    odom_msg.twist.covariance[35] = .1;    
+    odom_msg.twist.covariance[35] = .1;
     //////////////////////////
-
 
     /////////////////////////////////
     // IMU
@@ -334,8 +397,8 @@ void pub_calc_th(void* arg) {
     imu_msg.linear_acceleration_covariance[0] =
     imu_msg.linear_acceleration_covariance[4] =
     imu_msg.linear_acceleration_covariance[8] = 0.023145;
-    imu_msg.angular_velocity_covariance[0] = 
-    imu_msg.angular_velocity_covariance[4] = 
+    imu_msg.angular_velocity_covariance[0] =
+    imu_msg.angular_velocity_covariance[4] =
     imu_msg.angular_velocity_covariance[8] = 0.0010621;
     imu_msg.linear_acceleration.x = accX;
     imu_msg.linear_acceleration.y = accY;
@@ -358,27 +421,27 @@ void pub_calc_th(void* arg) {
     last_enc0_l = current_enc0_l;
     last_enc1_r = current_enc1_r;
     last_time = current_time;
-    // about 60Hz
-    delay(1000/100);
   }
 }
 
 void pub_th(void* arg) {
+  SimpleRate* pub_th_rate = new SimpleRate(30);
   while (1) {
     pub_odom.publish(&odom_msg);
     pub_imu.publish(&imu_msg);
-    delay(1000/30);
+    pub_th_rate->sleep();
   }
 }
 
 void sub_th(void* arg) {
+  SimpleRate* sub_th_rate = new SimpleRate(30);
   while (1) {
     nh.spinOnce();
-    delay(1000/30);
+    sub_th_rate->sleep();
   }
 }
 
-void ros_run() {
+void robot_run() {
   // encoder update
   if (m5bala.getOut0() != 0 && abs(m5bala.getOut0()) < 200) {
     enc0 += (m5bala.getSpeed0()/NUM_OF_PULSES_PER_WHEEL_REVOLUTION);
@@ -386,7 +449,7 @@ void ros_run() {
   if (m5bala.getOut1() != 0 && abs(m5bala.getOut1()) < 200) {
     enc1 += (m5bala.getSpeed1()/NUM_OF_PULSES_PER_WHEEL_REVOLUTION);
   }
-  // Align Unit.
+  // Convert units
   accX = -1.0 * m5bala.imu->getAccY() * 9.81;
   accY = 1.0 * m5bala.imu->getAccX() * 9.81;
   accZ = -1.0 * m5bala.imu->getAccZ() * 9.81;
@@ -396,9 +459,17 @@ void ros_run() {
   angleX = 1.0 * m5bala.imu->getAngleY();
   angleY = -1.0 * m5bala.imu->getAngleX();
   angleZ = 1.0 * m5bala.imu->getAngleZ();
-  // command
+  // cmd
   m5bala.move(joystick_Y);
   m5bala.rotate(joystick_X);
-  // Delay
-  delay(1000/100);
 }
+
+void neopixel_ctrl(int first_cnt, int last_cnt, int r, int g, int b, int w) {
+  SimpleRate neopixel_ctrl_rate(15);
+  for (int i=first_cnt; i<last_cnt; i++) {
+    pixels.setPixelColor(i, pixels.Color(r, g, b, w));
+    pixels.show();
+    neopixel_ctrl_rate.sleep();
+  }
+}
+
