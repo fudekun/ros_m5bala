@@ -9,6 +9,11 @@
 #include <geometry_msgs/TransformStamped.h>
 #include <sensor_msgs/Imu.h>
 #include <std_msgs/ColorRGBA.h>
+#include <std_msgs/Int32MultiArray.h>
+#include <std_msgs/UInt16MultiArray.h>
+#include <std_msgs/Int16MultiArray.h>
+#include <std_msgs/MultiArrayLayout.h>
+#include <std_msgs/MultiArrayDimension.h>
 #include <float.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -30,6 +35,13 @@
 #define M5STACK_FIRE_MICROPHONE_PIN 34
 #define M5STACK_FIRE_SPEAKER_PIN 25
 
+#define BUFBIT 12
+#define BUFSIZE (1<<BUFBIT)
+#define BUFMASK (BUFSIZE-1)
+int16_t buffer[2][BUFSIZE];
+int adc_bias;
+bool is_buffer_overflow = false;
+long counter = 0;
 
 void setRPY(const float& roll, const float& pitch, const float& yaw, float date[4]);
 void setupWiFi();
@@ -42,10 +54,13 @@ void pub_th(void* arg);
 void sub_th(void* arg);
 void robot_run();
 void neopixel_ctrl(int first_cnt, int last_cnt, int r, int g, int b, int w);
+void init_adc_bias();
+void pub_microphone_th(void* arg);
+void microphone_sampling_th(void* arg);
 
 WiFiClient client;
-const char* ssid = "";
-const char* password = "";
+const char* ssid = "rdbox-w98765-g";
+const char* password = "gL7bQKFz";
 char server[] = "coder01";
 //IPAddress server(192, 168, 10, 16); //ROS core IP adress
 
@@ -114,6 +129,35 @@ class SimpleRate {
     }
 };
 
+class SimpleRateMS {
+  private:
+    int hz_;
+    unsigned long start_;
+    int expected_cycle_time_;
+    unsigned long expected_end;
+    unsigned long actual_end;
+    int sleep_time;
+    uint32_t actual_cycle_time_;
+  public:
+    SimpleRateMS(int hz) {
+      hz_ = hz;
+      start_ = micros();
+      expected_cycle_time_ = (int)((1.0 / hz) * 1000000);
+    }
+    uint32_t sleep() {
+      expected_end = start_ + expected_cycle_time_;
+      actual_end = micros();
+      sleep_time = expected_end - actual_end;
+      actual_cycle_time_ = actual_end - start_;
+      start_ = expected_end;
+      if(sleep_time <= 0) {
+        return 0;
+      }
+      delayMicroseconds((uint32_t)sleep_time);
+      return sleep_time;
+    }
+};
+
 // ROS Node
 ros::NodeHandle_<WiFiHardware> nh;
 // ROS Pub Msg
@@ -124,9 +168,10 @@ ros::Publisher pub_odom("odom", &odom_msg);
 ros::Publisher pub_imu("imu_data", &imu_msg);
 // ROS Sub Topic
 ros::Subscriber<geometry_msgs::Twist> sub_twist("cmd_vel", &cmd_vel_cb);
-ros::Subscriber<sensor_msgs::CompressedImage> sub_img("usb_cam/image_raw/compressed", &image_data_cb);
+ros::Subscriber<sensor_msgs::CompressedImage> sub_img("image_data/compressed", &image_data_cb);
 ros::Subscriber<std_msgs::ColorRGBA> sub_led_left("led/left", &led_left_cb);
 ros::Subscriber<std_msgs::ColorRGBA> sub_led_right("led/right", &led_right_cb);
+
 
 void setup() {
   Serial.begin(115200);
@@ -189,6 +234,8 @@ void setup() {
 
   MDNS.begin("m5bala-001");
 
+  init_adc_bias();
+  Serial.println(adc_bias);
   // for ROS
   nh.initNode();
   nh.setSpinTimeout(1000);
@@ -200,8 +247,9 @@ void setup() {
   nh.advertise(pub_imu);
 
   xTaskCreatePinnedToCore(pub_calc_th, "pub_calc_th", 4096, NULL, 12, NULL, 0);
-  xTaskCreatePinnedToCore(pub_th, "pub_th", 4096, NULL, 13, NULL, 0);
+  xTaskCreatePinnedToCore(pub_th, "pub_th", 24000, NULL, 13, NULL, 0);
   xTaskCreatePinnedToCore(sub_th, "sub_th", 61440, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(microphone_sampling_th, "microphone_sampling_th", 24000, NULL, 12, NULL, 0);
 }
 
 SimpleRate* main_loop_rate = new SimpleRate(60);
@@ -284,7 +332,7 @@ void cmd_vel_cb(const geometry_msgs::Twist& twist) {
 }
 void image_data_cb(const sensor_msgs::CompressedImage& im) {
   //
-  M5.Lcd.drawJpg(im.data, sizeof(im.data), 80, 60, 0, 0, 0, 0, JPEG_DIV_NONE);
+  M5.Lcd.drawJpg(im.data, sizeof(im.data), 0, 0, 0, 0, 0, 0, JPEG_DIV_NONE);
 }
 void led_left_cb(const std_msgs::ColorRGBA& rgba) {
   //
@@ -425,10 +473,24 @@ void pub_calc_th(void* arg) {
 }
 
 void pub_th(void* arg) {
+  std_msgs::Int16MultiArray mic_msg;
+  ros::Publisher pub_mic("mic", &mic_msg);
+  mic_msg.data = (int16_t*)malloc(sizeof(int16_t) * BUFSIZE);
+  nh.advertise(pub_mic);
   SimpleRate* pub_th_rate = new SimpleRate(30);
   while (1) {
     pub_odom.publish(&odom_msg);
     pub_imu.publish(&imu_msg);
+    if (is_buffer_overflow == true) {
+      for (int i=0; i<BUFSIZE; i++) {
+        mic_msg.data[i]=buffer[1 - (counter >> BUFBIT) & 1][i];
+      }
+      mic_msg.data_length = BUFSIZE;
+      // mic_msg.data_length = 1;
+      // mic_msg.data[0]=1;
+      pub_mic.publish(&mic_msg);
+      is_buffer_overflow = false;
+    }
     pub_th_rate->sleep();
   }
 }
@@ -473,3 +535,25 @@ void neopixel_ctrl(int first_cnt, int last_cnt, int r, int g, int b, int w) {
   }
 }
 
+void init_adc_bias() {
+  dacWrite(M5STACK_FIRE_SPEAKER_PIN, 0); // Speaker OFF
+  //pinMode(M5STACK_FIRE_MICROPHONE_PIN, INPUT);
+  for (int i = 0; i < 1 << 8; i++) {
+    adc_bias += analogRead(M5STACK_FIRE_MICROPHONE_PIN);
+    delay(1);
+  }
+  adc_bias >>= 8;
+}
+
+
+void microphone_sampling_th(void* arg) {
+  while(1) {
+    int16_t sensorValue = analogRead(M5STACK_FIRE_MICROPHONE_PIN) - adc_bias;
+    buffer[(counter >> BUFBIT) & 1][counter & BUFMASK] = sensorValue;
+    counter++;
+    if ((counter & BUFMASK) == 0) { // overflow
+      is_buffer_overflow = true;
+    }
+    delay(1);
+  }
+}
