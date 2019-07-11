@@ -35,13 +35,13 @@
 #define M5STACK_FIRE_MICROPHONE_PIN 34
 #define M5STACK_FIRE_SPEAKER_PIN 25
 
-#define BUFBIT 12
-#define BUFSIZE (1<<BUFBIT)
-#define BUFMASK (BUFSIZE-1)
-int16_t buffer[2][BUFSIZE];
-int adc_bias;
+#define MIC_BUFBIT 12
+#define MIC_BUFSIZE (1<<MIC_BUFBIT)
+#define MIC_BUFMASK (MIC_BUFSIZE-1)
+int16_t mic_buffer[2][MIC_BUFSIZE];
+int32_t adc_bias;
 bool is_buffer_overflow = false;
-long counter = 0;
+unsigned long counter = 0;
 
 void setRPY(const float& roll, const float& pitch, const float& yaw, float date[4]);
 void setupWiFi();
@@ -148,12 +148,12 @@ class SimpleRateMS {
       expected_end = start_ + expected_cycle_time_;
       actual_end = micros();
       sleep_time = expected_end - actual_end;
-      actual_cycle_time_ = actual_end - start_;
+      //actual_cycle_time_ = actual_end - start_;
       start_ = expected_end;
       if(sleep_time <= 0) {
         return 0;
       }
-      delayMicroseconds((uint32_t)sleep_time);
+      ets_delay_us((uint32_t)sleep_time);
       return sleep_time;
     }
 };
@@ -163,9 +163,11 @@ ros::NodeHandle_<WiFiHardware> nh;
 // ROS Pub Msg
 nav_msgs::Odometry odom_msg;
 sensor_msgs::Imu imu_msg;
+std_msgs::Int16MultiArray mic_msg;
 // ROS Pub Topic
 ros::Publisher pub_odom("odom", &odom_msg);
 ros::Publisher pub_imu("imu_data", &imu_msg);
+ros::Publisher pub_mic("mic", &mic_msg);
 // ROS Sub Topic
 ros::Subscriber<geometry_msgs::Twist> sub_twist("cmd_vel", &cmd_vel_cb);
 ros::Subscriber<sensor_msgs::CompressedImage> sub_img("image_data/compressed", &image_data_cb);
@@ -199,8 +201,7 @@ void setup() {
 
   // Init NeoPixel(LED)
   pixels.begin();
-  pixels.setBrightness(30);
-  neopixel_ctrl(0, M5STACK_FIRE_NEO_NUM_LEDS, 255, 255, 255, 30);
+  neopixel_ctrl(0, M5STACK_FIRE_NEO_NUM_LEDS, 255, 0, 0, 10);
 
   setupWiFi();
 
@@ -234,8 +235,10 @@ void setup() {
 
   MDNS.begin("m5bala-001");
 
+  // for Mic
+  mic_msg.data = (int16_t*)malloc(sizeof(int16_t) * MIC_BUFSIZE);
   init_adc_bias();
-  Serial.println(adc_bias);
+
   // for ROS
   nh.initNode();
   nh.setSpinTimeout(1000);
@@ -245,17 +248,18 @@ void setup() {
   nh.subscribe(sub_led_left);
   nh.advertise(pub_odom);
   nh.advertise(pub_imu);
+  nh.advertise(pub_mic);
 
   xTaskCreatePinnedToCore(pub_calc_th, "pub_calc_th", 4096, NULL, 12, NULL, 0);
-  xTaskCreatePinnedToCore(pub_th, "pub_th", 24000, NULL, 13, NULL, 0);
+  xTaskCreatePinnedToCore(pub_th, "pub_th", 4096, NULL, 13, NULL, 0);
   xTaskCreatePinnedToCore(sub_th, "sub_th", 61440, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(microphone_sampling_th, "microphone_sampling_th", 24000, NULL, 12, NULL, 0);
+  xTaskCreatePinnedToCore(microphone_sampling_th, "microphone_sampling_th", 30000, NULL, 2, NULL, 1);
 }
 
 SimpleRate* main_loop_rate = new SimpleRate(60);
 void loop() {
   // sleep
-  main_loop_rate->sleep();
+  Serial.println(main_loop_rate->sleep());
 
   // Robot
   robot_run();
@@ -473,19 +477,15 @@ void pub_calc_th(void* arg) {
 }
 
 void pub_th(void* arg) {
-  std_msgs::Int16MultiArray mic_msg;
-  ros::Publisher pub_mic("mic", &mic_msg);
-  mic_msg.data = (int16_t*)malloc(sizeof(int16_t) * BUFSIZE);
-  nh.advertise(pub_mic);
   SimpleRate* pub_th_rate = new SimpleRate(30);
   while (1) {
     pub_odom.publish(&odom_msg);
     pub_imu.publish(&imu_msg);
     if (is_buffer_overflow == true) {
-      for (int i=0; i<BUFSIZE; i++) {
-        mic_msg.data[i]=buffer[1 - (counter >> BUFBIT) & 1][i];
+      for (int i=0; i<MIC_BUFSIZE; i++) {
+        mic_msg.data[i]=mic_buffer[1 - (counter >> MIC_BUFBIT) & 1][i];
       }
-      mic_msg.data_length = BUFSIZE;
+      mic_msg.data_length = MIC_BUFSIZE;
       // mic_msg.data_length = 1;
       // mic_msg.data[0]=1;
       pub_mic.publish(&mic_msg);
@@ -529,7 +529,8 @@ void robot_run() {
 void neopixel_ctrl(int first_cnt, int last_cnt, int r, int g, int b, int w) {
   SimpleRate neopixel_ctrl_rate(15);
   for (int i=first_cnt; i<last_cnt; i++) {
-    pixels.setPixelColor(i, pixels.Color(r, g, b, w));
+    pixels.setPixelColor(i, pixels.Color(r, g, b));
+    pixels.setBrightness(w);
     pixels.show();
     neopixel_ctrl_rate.sleep();
   }
@@ -547,13 +548,16 @@ void init_adc_bias() {
 
 
 void microphone_sampling_th(void* arg) {
+  delay(5000);
+  int16_t sensorValue = 0;
+  SimpleRateMS microphone_sampling_rate(MIC_BUFSIZE);
   while(1) {
-    int16_t sensorValue = analogRead(M5STACK_FIRE_MICROPHONE_PIN) - adc_bias;
-    buffer[(counter >> BUFBIT) & 1][counter & BUFMASK] = sensorValue;
+    sensorValue = analogRead(M5STACK_FIRE_MICROPHONE_PIN) - adc_bias;
+    mic_buffer[(counter >> MIC_BUFBIT) & 1][counter & MIC_BUFMASK] = sensorValue<<(16-MIC_BUFBIT);
     counter++;
-    if ((counter & BUFMASK) == 0) { // overflow
+    if ((counter & MIC_BUFMASK) == 0) { // overflow
       is_buffer_overflow = true;
     }
-    delay(1);
+    microphone_sampling_rate.sleep();
   }
 }
