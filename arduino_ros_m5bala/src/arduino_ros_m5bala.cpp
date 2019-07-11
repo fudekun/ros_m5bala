@@ -57,6 +57,7 @@ void neopixel_ctrl(int first_cnt, int last_cnt, int r, int g, int b, int w);
 void init_adc_bias();
 void pub_microphone_th(void* arg);
 void microphone_sampling_th(void* arg);
+void main_loop(void* arg);
 
 WiFiClient client;
 const char* ssid = "rdbox-w98765-g";
@@ -192,13 +193,6 @@ void setup() {
   M5.Lcd.setTextColor(WHITE, BLACK);
   M5.Lcd.println("M5Stack Balance Mode start");
 
-  // Init M5Bala
-  m5bala.begin();
-  m5bala.imu->setGyroOffsets(0.47, 0.6, -0.86);
-  delay(1000);
-  m5bala.move(-30);
-  m5bala.rotate(0);
-
   // Init NeoPixel(LED)
   pixels.begin();
   neopixel_ctrl(0, M5STACK_FIRE_NEO_NUM_LEDS, 255, 0, 0, 10);
@@ -250,34 +244,51 @@ void setup() {
   nh.advertise(pub_imu);
   nh.advertise(pub_mic);
 
+  
   xTaskCreatePinnedToCore(pub_calc_th, "pub_calc_th", 4096, NULL, 12, NULL, 0);
   xTaskCreatePinnedToCore(pub_th, "pub_th", 4096, NULL, 13, NULL, 0);
   xTaskCreatePinnedToCore(sub_th, "sub_th", 61440, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(microphone_sampling_th, "microphone_sampling_th", 30000, NULL, 2, NULL, 1);
+  xTaskCreatePinnedToCore(microphone_sampling_th, "microphone_sampling_th", 4096, NULL, 2, NULL, 1);
+  xTaskCreatePinnedToCore(main_loop, "main_loop", 8192, NULL, 2, NULL, 0);
 }
 
-SimpleRate* main_loop_rate = new SimpleRate(60);
+bool is_first_loop = true;
 void loop() {
-  // sleep
-  Serial.println(main_loop_rate->sleep());
-
-  // Robot
-  robot_run();
-
-  // M5Bala run
-  m5bala.run();
-
-  // M5 Loop
-  M5.update();
-
-  // For OTA
-  ArduinoOTA.handle();
+  // EMP
+  delay(1000);
 }
 
 
 /////////////////////////////////////////////
 //
 /////////////////////////////////////////////
+
+void main_loop(void* arg) {
+  // Roop Late
+  SimpleRate* main_loop_rate = new SimpleRate(60);
+  // Init M5Bala
+  m5bala.begin();
+  m5bala.imu->setGyroOffsets(0.47, 0.6, -0.86);
+  delay(1000);
+  m5bala.move(-30);
+  m5bala.rotate(0);
+  while (1) {
+    // sleep
+    Serial.println(main_loop_rate->sleep());
+
+    // Robot
+    robot_run();
+
+    // M5Bala run
+    m5bala.run();
+
+    // M5 Loop
+    M5.update();
+
+    // For OTA
+    ArduinoOTA.handle();
+  }
+}
 
 void setRPY(const float& roll, const float& pitch, const float& yaw, float date[4]) {
   float halfYaw = float(yaw) * float(0.5);
@@ -548,7 +559,7 @@ void init_adc_bias() {
 
 
 void microphone_sampling_th(void* arg) {
-  delay(5000);
+  delay(10000);
   int16_t sensorValue = 0;
   SimpleRateMS microphone_sampling_rate(MIC_BUFSIZE);
   while(1) {
