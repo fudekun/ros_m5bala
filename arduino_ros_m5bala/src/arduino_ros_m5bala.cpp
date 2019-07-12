@@ -41,6 +41,22 @@ int32_t adc_bias;
 bool is_buffer_overflow = false;
 unsigned long counter = 0;
 
+#define NOTE_D0 -1 //silence
+#define NOTE_B1 262 //To (B)
+#define NOTE_Cd1 277 //C sharp (C#)
+#define NOTE_D1 294 //Re (D)
+#define NOTE_Dd1 311 //in D sharp (D#)
+#define NOTE_E1 330 //Mi (E)
+#define NOTE_F1 349 //FA (F)
+#define NOTE_Fd1 370 //f-sharp (F#)
+#define NOTE_G1 392 //Sol (G)
+#define NOTE_Gd1 415 //g sharp (G#)
+#define NOTE_A1 440 //La (A)
+#define NOTE_Ad1 466 //La-a sharp (A#)
+#define NOTE_H1 494 //si (H)
+#define NOTE_C5 523 //To
+uint16_t music[] = {NOTE_B1,  NOTE_D1,  NOTE_E1, NOTE_F1, NOTE_G1, NOTE_A1, NOTE_H1, NOTE_C5};
+
 void setRPY(const float& roll, const float& pitch, const float& yaw, float date[4]);
 void setupWiFi();
 void cmd_vel_cb(const geometry_msgs::Twist& twist);
@@ -121,7 +137,7 @@ class SimpleRate {
       actual_cycle_time_ = actual_end - start_;
       start_ = expected_end;
       if(sleep_time <= 0) {
-        return 0;
+        return actual_cycle_time_;
       }
       delay((uint32_t)sleep_time);
       return sleep_time;
@@ -147,10 +163,10 @@ class SimpleRateMS {
       expected_end = start_ + expected_cycle_time_;
       actual_end = micros();
       sleep_time = expected_end - actual_end;
-      //actual_cycle_time_ = actual_end - start_;
+      actual_cycle_time_ = actual_end - start_;
       start_ = expected_end;
       if(sleep_time <= 0) {
-        return 0;
+        return actual_cycle_time_;
       }
       ets_delay_us((uint32_t)sleep_time);
       return sleep_time;
@@ -226,10 +242,6 @@ void setup() {
   ArduinoOTA.begin();
 
   MDNS.begin("m5bala-001");
-
-  // for Mic
-  mic_msg.data = (int16_t*)malloc(sizeof(int16_t) * M5STACK_FIRE_MIC_BUFSIZE);
-  init_adc_bias();
 
   // for ROS
   nh.initNode();
@@ -553,7 +565,16 @@ void init_adc_bias() {
 
 
 void microphone_sampling_th(void* arg) {
-  delay(10000);
+  // time adjust
+  for (int i = 0; i < sizeof(music)/sizeof(uint16_t); i++) {
+    // M5.Speaker.tone(music[i]);
+    delay(300);
+  }
+  M5.Speaker.mute();
+  delay(2000);
+  // for Mic
+  mic_msg.data = (int16_t*)malloc(sizeof(int16_t) * M5STACK_FIRE_MIC_BUFSIZE);
+  init_adc_bias();
   int16_t sensorValue = 0;
   SimpleRateMS microphone_sampling_rate(M5STACK_FIRE_MIC_BUFSIZE);
   while(1) {
@@ -564,6 +585,5 @@ void microphone_sampling_th(void* arg) {
       is_buffer_overflow = true;
     }
     microphone_sampling_rate.sleep();
-    // Serial.println(microphone_sampling_rate.sleep());
   }
 }
