@@ -51,7 +51,7 @@ namespace ros
 
 #elif defined(__AVR_ATmega328P__)
 
-  typedef NodeHandle_<ArduinoHardware, 25, 25, 30720, 12288> NodeHandle;
+  typedef NodeHandle_<ArduinoHardware, 25, 25, 15360, 30720> NodeHandle;
 
 #elif defined(SPARK)
 

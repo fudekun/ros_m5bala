@@ -9,11 +9,7 @@
 #include <geometry_msgs/TransformStamped.h>
 #include <sensor_msgs/Imu.h>
 #include <std_msgs/ColorRGBA.h>
-#include <std_msgs/Int32MultiArray.h>
-#include <std_msgs/UInt16MultiArray.h>
 #include <std_msgs/Int16MultiArray.h>
-#include <std_msgs/MultiArrayLayout.h>
-#include <std_msgs/MultiArrayDimension.h>
 #include <float.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -22,6 +18,7 @@
 #include <ESPmDNS.h>
 #include <WiFiUdp.h>
 #include <Adafruit_NeoPixel.h>
+#include <driver/dac.h>
 
 
 #define NUM_OF_PULSES_PER_WHEEL_REVOLUTION 2560.0     // count up per int8=>256pulses/20deg(16pices)
@@ -30,15 +27,16 @@
 #define DIAMETER_WHEEL 0.04356                        // m
 #define TREAD_WHEEL 0.040                             // m
 
-#define M5STACK_FIRE_NEO_NUM_LEDS 10                  // Left(4~9) Right(0~4)
 #define M5STACK_FIRE_NEO_DATA_PIN 15
 #define M5STACK_FIRE_MICROPHONE_PIN 34
 #define M5STACK_FIRE_SPEAKER_PIN 25
 
-#define MIC_BUFBIT 12
-#define MIC_BUFSIZE (1<<MIC_BUFBIT)
-#define MIC_BUFMASK (MIC_BUFSIZE-1)
-int16_t mic_buffer[2][MIC_BUFSIZE];
+#define M5STACK_FIRE_NEO_NUM_LEDS 10                  // Left(4~9) Right(0~4)
+
+#define M5STACK_FIRE_MIC_BUFBIT 12
+#define M5STACK_FIRE_MIC_BUFSIZE (1<<M5STACK_FIRE_MIC_BUFBIT)
+#define M5STACK_FIRE_MIC_BUFMASK (M5STACK_FIRE_MIC_BUFSIZE-1)
+int16_t mic_buffer[2][M5STACK_FIRE_MIC_BUFSIZE];
 int32_t adc_bias;
 bool is_buffer_overflow = false;
 unsigned long counter = 0;
@@ -230,7 +228,7 @@ void setup() {
   MDNS.begin("m5bala-001");
 
   // for Mic
-  mic_msg.data = (int16_t*)malloc(sizeof(int16_t) * MIC_BUFSIZE);
+  mic_msg.data = (int16_t*)malloc(sizeof(int16_t) * M5STACK_FIRE_MIC_BUFSIZE);
   init_adc_bias();
 
   // for ROS
@@ -244,10 +242,10 @@ void setup() {
   nh.advertise(pub_imu);
   nh.advertise(pub_mic);
 
-  
+  // Core & Thread
   xTaskCreatePinnedToCore(pub_calc_th, "pub_calc_th", 4096, NULL, 12, NULL, 0);
   xTaskCreatePinnedToCore(pub_th, "pub_th", 4096, NULL, 13, NULL, 0);
-  xTaskCreatePinnedToCore(sub_th, "sub_th", 61440, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(sub_th, "sub_th", 30720, NULL, 1, NULL, 1);
   xTaskCreatePinnedToCore(microphone_sampling_th, "microphone_sampling_th", 4096, NULL, 2, NULL, 1);
   xTaskCreatePinnedToCore(main_loop, "main_loop", 8192, NULL, 2, NULL, 0);
 }
@@ -262,33 +260,6 @@ void loop() {
 /////////////////////////////////////////////
 //
 /////////////////////////////////////////////
-
-void main_loop(void* arg) {
-  // Roop Late
-  SimpleRate* main_loop_rate = new SimpleRate(60);
-  // Init M5Bala
-  m5bala.begin();
-  m5bala.imu->setGyroOffsets(0.47, 0.6, -0.86);
-  delay(1000);
-  m5bala.move(-30);
-  m5bala.rotate(0);
-  while (1) {
-    // sleep
-    Serial.println(main_loop_rate->sleep());
-
-    // Robot
-    robot_run();
-
-    // M5Bala run
-    m5bala.run();
-
-    // M5 Loop
-    M5.update();
-
-    // For OTA
-    ArduinoOTA.handle();
-  }
-}
 
 void setRPY(const float& roll, const float& pitch, const float& yaw, float date[4]) {
   float halfYaw = float(yaw) * float(0.5);
@@ -358,6 +329,32 @@ void led_right_cb(const std_msgs::ColorRGBA& rgba) {
   neopixel_ctrl(0, 5, rgba.r, rgba.g, rgba.b, rgba.a);
 }
 
+void main_loop(void* arg) {
+  // Roop Late
+  SimpleRate* main_loop_rate = new SimpleRate(60);
+  // Init M5Bala
+  m5bala.begin();
+  m5bala.imu->setGyroOffsets(0.47, 0.6, -0.86);
+  delay(1000);
+  m5bala.move(-30);
+  m5bala.rotate(0);
+  while (1) {
+    // sleep
+    main_loop_rate->sleep();
+
+    // Robot
+    robot_run();
+
+    // M5Bala run
+    m5bala.run();
+
+    // M5 Loop
+    M5.update();
+
+    // For OTA
+    ArduinoOTA.handle();
+  }
+}
 
 void pub_calc_th(void* arg) {
   geometry_msgs::TransformStamped odom_trans;
@@ -479,7 +476,6 @@ void pub_calc_th(void* arg) {
     imu_msg.orientation = imu_quat;
     //////////////////////////
 
-
     // Record
     last_enc0_l = current_enc0_l;
     last_enc1_r = current_enc1_r;
@@ -493,12 +489,10 @@ void pub_th(void* arg) {
     pub_odom.publish(&odom_msg);
     pub_imu.publish(&imu_msg);
     if (is_buffer_overflow == true) {
-      for (int i=0; i<MIC_BUFSIZE; i++) {
-        mic_msg.data[i]=mic_buffer[1 - (counter >> MIC_BUFBIT) & 1][i];
+      for (int i=0; i<M5STACK_FIRE_MIC_BUFSIZE; i++) {
+        mic_msg.data[i]=mic_buffer[1 - (counter >> M5STACK_FIRE_MIC_BUFBIT) & 1][i];
       }
-      mic_msg.data_length = MIC_BUFSIZE;
-      // mic_msg.data_length = 1;
-      // mic_msg.data[0]=1;
+      mic_msg.data_length = M5STACK_FIRE_MIC_BUFSIZE;
       pub_mic.publish(&mic_msg);
       is_buffer_overflow = false;
     }
@@ -561,14 +555,15 @@ void init_adc_bias() {
 void microphone_sampling_th(void* arg) {
   delay(10000);
   int16_t sensorValue = 0;
-  SimpleRateMS microphone_sampling_rate(MIC_BUFSIZE);
+  SimpleRateMS microphone_sampling_rate(M5STACK_FIRE_MIC_BUFSIZE);
   while(1) {
     sensorValue = analogRead(M5STACK_FIRE_MICROPHONE_PIN) - adc_bias;
-    mic_buffer[(counter >> MIC_BUFBIT) & 1][counter & MIC_BUFMASK] = sensorValue<<(16-MIC_BUFBIT);
+    mic_buffer[(counter >> M5STACK_FIRE_MIC_BUFBIT) & 1][counter & M5STACK_FIRE_MIC_BUFMASK] = sensorValue<<(16-M5STACK_FIRE_MIC_BUFBIT);
     counter++;
-    if ((counter & MIC_BUFMASK) == 0) { // overflow
+    if ((counter & M5STACK_FIRE_MIC_BUFMASK) == 0) { // overflow
       is_buffer_overflow = true;
     }
     microphone_sampling_rate.sleep();
+    // Serial.println(microphone_sampling_rate.sleep());
   }
 }
