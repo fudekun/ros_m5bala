@@ -48,6 +48,15 @@
        <inertia ixx="1" ixy="0" ixz="0" iyy="1" iyz="0" izz="1" />
     </inertial>
   </link>
+
+  <joint name="camera_frame_joint" type="fixed">
+    <origin xyz="0 0 0.2" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="camera_frame"/>
+  </joint>
+
+  <link name="camera_frame">
+  </link>
   
   <link name="left_wheel">
     <collision name="collision">

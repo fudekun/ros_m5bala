@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="marker_size" default="6.1" />
+  <arg name="max_new_marker_error" default="0.08" />
+  <arg name="max_track_error" default="0.2" />
+  <arg name="cam_image_topic" default="/usb_cam/image_raw" />
+  <arg name="cam_info_topic" default="/usb_cam/camera_info" />	
+  <arg name="output_frame" default="camera_frame" />
+
+  <node name="usb_cam" pkg="usb_cam" type="usb_cam_node">
+    <param name="video_device" value="/dev/video2" />
+    <param name="image_width" value="1920" />
+    <param name="image_height" value="1080" />
+    <param name="pixel_format" value="mjpeg" />
+    <param name="camera_frame_id" value="usb_cam" />
+    <param name="io_method" value="mmap"/>
+    <param name="camera_frame_id" value="camera_frame"/>
+  </node>
+  
+  <node name="ar_track_alvar" pkg="ar_track_alvar" type="individualMarkersNoKinect" respawn="false" output="screen"
+	 args="$(arg marker_size) $(arg max_new_marker_error) $(arg max_track_error) $(arg cam_image_topic) $(arg cam_info_topic) $(arg output_frame)" />
+</launch>
